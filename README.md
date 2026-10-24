@@ -8,6 +8,18 @@ Hotel booking platform for Cambodia. Guests search live availability in all 25 p
 | API | Java 21, Spring Boot 3.5, Spring Security | 8080 |
 | Database | PostgreSQL 18 with Flyway migrations | 5432 |
 
+## Team
+
+**Group #3 · OOAD project**
+
+| Member |
+| --- |
+| Rady Y |
+| Sarath Orn |
+| Vetou Sim |
+| Chhanghong Try |
+| Kimseng Sihong |
+
 ## Contents
 
 1. [Quick start with Docker](#1-quick-start-with-docker)
