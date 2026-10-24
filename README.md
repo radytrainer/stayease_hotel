@@ -177,13 +177,40 @@ Open <http://localhost:3000>. Pages reload as you save files.
 
 ## 5. Tests
 
-| Part | Command | Notes |
-| --- | --- | --- |
-| API | `cd backend && mvn test` | Docker must be running: integration tests start a real PostgreSQL container (Testcontainers) |
-| Web | `cd frontend && npm run lint` | TypeScript type check |
-| Web | `cd frontend && npm run build` | Production build |
+### Run everything with one command
 
-The API tests cover double-booking races, hold expiry, frozen prices, Stripe webhook signatures and refunds, pay at hotel, promo code rules, role-based access (401/403) and backup/restore.
+```bash
+docker compose up -d --build     # the smoke test needs the app running
+node scripts/test-all.mjs
+```
+
+It runs the steps below in order and prints a PASS/FAIL summary. Options: `--quick` skips the backend suite, `--no-smoke` skips the smoke test, `--no-build` skips the production build, `--no-install` skips `npm ci`.
+
+| Step | Command | What it checks |
+| --- | --- | --- |
+| Backend tests | `cd backend && mvn test` | Unit and PostgreSQL integration tests: double-booking races, hold expiry, frozen prices, Stripe webhooks and refunds, pay at hotel, promo codes, 401/403 access rules, backup/restore. Docker must be running (Testcontainers) |
+| Frontend type check | `cd frontend && npm run lint` | TypeScript errors |
+| Frontend build | `cd frontend && npm run build` | The production build succeeds |
+| Smoke test | `node scripts/smoke-test.mjs` | 26 end-to-end checks against the running app (below) |
+
+### End-to-end smoke test
+
+`scripts/smoke-test.mjs` drives the real API the way the web app does, using the demo accounts:
+
+1. Public search and destinations
+2. Sign-in for all four roles, and rejection of a wrong password
+3. Access control: 401 without a token, 403 for the wrong role
+4. A booking: free room, 15-minute hold, same idempotency key returns the same booking, a second guest gets 409 for the same room, other guests cannot read it
+5. Pay at hotel confirms the booking
+6. The receptionist sees the arrival with an amount to collect; the manager report loads
+7. Cancellation frees the room and notifications arrive
+8. Sign-out ends the session
+
+Bookings use random dates 300–700 days ahead and are cancelled at the end, so the test can run any number of times. To test another server: `API_URL=https://your-server/api/v1 node scripts/smoke-test.mjs`.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request on GitHub: backend tests, frontend type check and build, then the smoke test against a fresh `docker compose` stack. Results appear in the repository's **Actions** tab.
 
 ## 6. Everyday commands
 
