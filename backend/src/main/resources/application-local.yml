@@ -1,0 +1,6 @@
+spring:
+  flyway:
+    locations: classpath:db/migration,classpath:db/local
+    # Demo seeds (db/local) are numbered V900+, so a newer schema migration such as V10 sorts below an applied seed.
+    # Local databases may therefore apply schema migrations out of order; other profiles never load db/local.
+    out-of-order: true

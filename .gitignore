@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+backend/target/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+*.dump
+*.log
+scripts/.unsplash-tracking.json
+*.tsbuildinfo
