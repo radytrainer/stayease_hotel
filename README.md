@@ -1,57 +1,228 @@
 # StayEase
 
-StayEase is a hotel booking system with a Next.js/TypeScript web client, Java 21/Spring Boot REST API, and PostgreSQL. It is a production-oriented foundation, with external operations still requiring deployment-specific setup and verification.
+Hotel booking platform for Cambodia. Guests search live availability in all 25 provinces, hold rooms at a fixed price and pay online (Stripe) or at the hotel. Hotel managers, receptionists and administrators each get their own workspace.
 
-## Architecture
+| Part | Technology | Port |
+| --- | --- | --- |
+| Web app | Next.js 16, React 19, TypeScript, Tailwind CSS | 3000 |
+| API | Java 21, Spring Boot 3.5, Spring Security | 8080 |
+| Database | PostgreSQL 18 with Flyway migrations | 5432 |
 
-The backend uses feature-first packages: each feature keeps its controllers, DTOs, entities, repositories, and services together. Shared Spring configuration and API exception handling live under `common`. Controllers expose versioned REST endpoints; services own workflows and orchestration; domain types own reservation rules; infrastructure uses PostgreSQL, Flyway, bearer sessions, and Stripe Checkout. A single booking/payment transaction boundary plus PostgreSQL range-exclusion constraints protects room inventory. Staff access is scoped by hotel assignment.
+## Contents
 
-Primary records cover users and roles, hotels and inventory, reservations and price snapshots, payments/refunds, check-in/out, status history, in-app notifications, and audit events. Reservation holds expire after 15 minutes; starting Stripe Checkout extends a hold to 40 minutes.
+1. [Quick start with Docker](#1-quick-start-with-docker)
+2. [Sign in with the demo accounts](#2-sign-in-with-the-demo-accounts)
+3. [Configuration](#3-configuration)
+4. [Run without Docker (development)](#4-run-without-docker-development)
+5. [Tests](#5-tests)
+6. [Everyday commands](#6-everyday-commands)
+7. [Project structure](#7-project-structure)
+8. [Troubleshooting](#8-troubleshooting)
 
-## Run locally
+---
 
-Pinned stack: Java 21, Spring Boot 3.5.16, AWS SDK for Java 2.56.0, Springdoc 2.8.17, Next.js 16.4.1, React 19.3.1, and PostgreSQL 18.6. Requirements: Docker Compose, or Java 21 + Maven 3.9 + Node.js 20.9+ + npm. Copy `.env.example` to `.env` and provide secrets locally. Run `docker compose up --build`; API uses port 8080 and web uses 3000. Swagger UI is at `/swagger-ui.html`.
+## 1. Quick start with Docker
 
-Local Docker also creates demo sign-ins for every role (`db/local/V907`), all with the password `StayEase-Demo-2026`: `admin@stayease.local` (administrator), `manager@stayease.local` (manager of Lotus Lantern Residence and Mekong Riverside Suites), `reception@stayease.local` (receptionist at Lotus Lantern Residence) and `guest@stayease.local`. They exist only in the local profile; production gets its first administrator from `BOOTSTRAP_ADMIN_EMAIL`.
+This is the easiest way to run the whole system: database, API and web app with one command.
 
-Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` to enable checkout. Configure Stripe to send `payment_intent.succeeded` and `payment_intent.payment_failed` to `/api/v1/payments/webhooks/stripe`. For the first administrator, set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` (at least 12 characters) before startup; never commit `.env`.
+**You need:** [Git](https://git-scm.com/downloads) and [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running).
 
-To enable outbound email, set `EMAIL_API_KEY` and `EMAIL_FROM` to a Resend-compatible API key and verified sender. The email outbox retries with backoff, uses notification IDs as provider idempotency keys, and stops retrying after eight failures or seven days. Leave these values empty to keep email delivery disabled; the in-app inbox remains available.
+#### Step 1. Get the code
 
-To enable hotel photo uploads, set `S3_BUCKET`, `S3_ACCESS_KEY`, and `S3_SECRET_KEY`. Set `S3_ENDPOINT` for S3-compatible providers and `S3_REGION` for the bucket region. Managers can upload JPEG, PNG, or WebP images up to 10 MB; public hotel detail pages serve photos for approved hotels.
+```bash
+git clone https://github.com/radytrainer/stayease_hotel.git
+cd stayease_hotel
+```
 
-## Implemented workflows
+#### Step 2. Create your settings file
 
-Sign-in lives at `/signin` (`/account` redirects there). Failed sign-ins are limited to 5 per account and 20 per client address per 15 minutes, and registrations to 10 per client address; limited requests get `429` with `Retry-After`. Unknown emails are checked against a dummy hash so response time does not reveal whether an account exists. Each sign-in attempt is recorded in `audit_log` as `LOGIN_SUCCEEDED` or `LOGIN_FAILED`. The post-sign-in `returnTo` target must be a same-origin path. Limits are kept in memory per API instance, so multi-replica deployments should also rate limit at the gateway. Set `FORWARD_HEADERS_STRATEGY=native` only behind a trusted proxy.
+```bash
+cp .env.example .env
+```
 
-Guests can register, sign in, search hotels and room availability, create multi-room reservations, pay through Stripe Checkout or choose pay at hotel (the booking is confirmed and the front desk records the payment on arrival), view booking history and in-app updates, and cancel under the policy saved at booking. Payment confirmation is webhook-driven; verified webhook signatures and idempotency, expired-hold compensation refunds, and refund reconciliation records are supported.
+On Windows Command Prompt use `copy .env.example .env`. Open `.env` and change `POSTGRES_PASSWORD`. Everything else can stay empty for a first run (see [Configuration](#3-configuration)).
 
-Hotel managers can maintain inventory, rates, cancellation policies, promo codes (percent or fixed, with bookable dates, minimum stay, usage limits and once-per-guest), and reports. Administrators run platform promotions that work at every hotel (Workspace → Promotions); featured ones are advertised on the home page only while bookable, with an occasion theme (Khmer New Year, Pchum Ben, Water Festival, green season...), so holiday offers can be scheduled in advance. "Book with code" carries the code to the hotel page, which also lists current offers. Receptionists can review arrivals/departures and record check-in/out. System administrators can approve hotels, enable users, and assign staff. The browser includes guest booking/account pages, hotel submission, and role-aware staff consoles. Local Docker activates seeded demo inventory: 146 fictional hotels across all of Cambodia's 24 provinces and Phnom Penh (15 each in Siem Reap and Phnom Penh, at least 3 in every province), priced in USD with high-season and Khmer New Year rates (`db/local/V901`-`V903`). Hotels without an uploaded photo show a generated illustration of their province's landscape (`frontend/components/HotelArt.tsx`). Search is paged (`page`, `size` up to 100, `sort=name|price_asc|price_desc`) and `GET /api/v1/hotels/destinations` returns hotel counts per province. Locations are stored as "Province (Capital)" where the names differ, for example "Ratanakiri (Banlung)", so guests can search by either. `CambodiaProvincesSeedIntegrationTest` loads the seed and searches, prices and books a stay in every province. StayEase is Cambodia-only: hotel registration accepts country `Cambodia` with time zone `Asia/Phnom_Penh`, and the API rejects anything else. Demo photos come from Unsplash: add `UNSPLASH_ACCESS_KEY` to `.env`, run `node scripts/unsplash-demo-photos.mjs` to generate `db/local/V906__demo_unsplash_photos.sql`, then `node scripts/unsplash-demo-photos.mjs --track` (repeat hourly until done) to report photo usage as the Unsplash API guidelines require. Unsplash photos are hotlinked from `images.unsplash.com` and always shown with the photographer credit; the database only accepts Unsplash for hotlinked photos.
+#### Step 3. Start everything
 
-## Languages
+```bash
+docker compose up --build
+```
 
-The interface is in English and Khmer; the EN / ខ្មែរ switch in the header strip stores the choice in the `stayease-lang` cookie, so the server renders `<html lang>` correctly on the first load. English text is the translation key (`t('Sign in')`), with Khmer entries in `frontend/lib/km/` (`common`, `guest`, `staff`, `server`); a missing entry falls back to English. The API's English error details are mapped to Khmer in the browser (`translateServer` in `frontend/lib/lang.ts`: exact messages from `km/server.ts`, messages carrying a date, code or number by pattern). Dates use the `km-KH` locale, and province names, statuses, roles and counts ("3 យប់") are localised. Khmer pages use Noto Sans Khmer with taller line height and no letter spacing (`html:lang(km)` in `globals.css`). Content people enter (hotel names and descriptions, room type names, promotion headlines) and outgoing emails stay in the language they were written in. When adding UI text, wrap it in `t()` and add its Khmer entry; the Khmer has not yet been reviewed by a native speaker.
+The first build downloads and compiles everything and takes a few minutes. The API runs the database migrations and loads demo data on start-up; the web app starts once the API is healthy.
 
-## Remaining deployment work
+#### Step 4. Open the app
 
-Notifications include a durable in-app inbox and optional Resend-compatible email delivery. Hotel photos use an optional S3-compatible adapter. Automated backup scheduling and end-to-end browser coverage remain outstanding. Configure operational rate limits, monitoring and payment reconciliation alerts, and complete a security review and Stripe sandbox verification before public deployment. Stripe sandbox behavior is not proof of live settlement.
+| What | Address |
+| --- | --- |
+| Website | <http://localhost:3000> |
+| API health check | <http://localhost:8080/api/v1/health> |
+| API documentation (Swagger) | <http://localhost:8080/swagger-ui.html> |
 
-Stripe Checkout collects card details on Stripe-hosted pages; StayEase does not accept or store raw card data. Backups can be made with `pg_dump -Fc "$DATABASE_URL" > stayease.dump`; restore into an empty database with `pg_restore --clean --if-exists -d "$DATABASE_URL" stayease.dump`. Configure encryption, retention, and restore drills in the deployment environment.
+Stop with `Ctrl+C`, or run `docker compose down` from another terminal.
 
-## Checks
+## 2. Sign in with the demo accounts
 
-API: `cd backend && mvn test`, which needs a running Docker daemon. Integration tests start a disposable `postgres:18.6` container through Testcontainers and run against the real Flyway schema, because range exclusion, deferred triggers and row locks are PostgreSQL-specific and H2 is not a substitute. The Docker image build skips tests. Web: `cd frontend && npm run lint` and `npm run build`.
+Docker starts the API with the `local` profile, which loads 146 demo hotels across Cambodia and one account per role. All demo accounts use the password **`StayEase-Demo-2026`**.
 
-Unit tests cover state transitions, bearer token handling, sign-in rate limiting, cancellation policy math, and Stripe signature/amount handling. PostgreSQL integration tests (`backend/src/test/java/com/stayease/integration`) cover:
+| Email | Role | What to try |
+| --- | --- | --- |
+| `guest@stayease.local` | Guest | Search, book a room, pay at hotel, cancel, print a receipt |
+| `manager@stayease.local` | Hotel manager | Workspace: rooms, rates, policy, photos, promo codes, reports (Lotus Lantern Residence, Mekong Riverside Suites) |
+| `reception@stayease.local` | Receptionist | Workspace: arrivals, check-in, check-out, mark payments received (Lotus Lantern Residence) |
+| `admin@stayease.local` | Administrator | Workspace: approve hotels, users, staff assignments, platform promotions |
 
-- Migrations: every version applies cleanly, a re-run is a no-op, Hibernate validates the schema, and the demo seed stays out of non-local profiles.
-- Inventory constraints written directly in SQL: overlapping stays are rejected, back-to-back stays are allowed, released holds stop blocking, and a reservation needs at least one room line.
-- Concurrency: 8 guests racing for one room yield exactly one booking with no partial rows; overlapping date ranges race correctly; two multi-room bookings taking rooms in opposite order neither deadlock nor split inventory; duplicate submissions with one idempotency key return the same reservation.
-- Lifecycle: priority-based nightly pricing in exact decimals, booked rates frozen against later price changes, multi-room lines, hold expiry releasing inventory, and date/capacity/out-of-service/cross-hotel/unapproved-hotel rejection.
-- HTTP access control (`HttpAccessControlIntegrationTest`, real bearer sessions through MockMvc): missing, expired, revoked and disabled-account sessions get `401`; signing out ends only that session and disabling a user ends all of theirs; each console rejects the other roles with `403`; managers and receptionists cannot read or change another hotel, including through their own hotel's URL with another hotel's room, room type or reservation ID; guests cannot read, pay for or cancel another guest's booking or touch their notifications.
-- Promo codes (`PromotionCodeIntegrationTest`): a percent or fixed code lowers the booking total and the checkout amount, and the booking records subtotal, discount and code; minimum stay, bookable dates, pausing, total uses (an expired hold gives its use back) and one use per guest are enforced on the server; four guests racing for a code's last use get exactly one; a discount is capped at the stay price and a $0 booking is confirmed with pay at hotel, not Stripe; a code only works at its own hotel and only that hotel's managers can create or pause it.
-- Pay at hotel (`PayAtHotelIntegrationTest`): choosing it confirms a live hold and records a `provider='hotel'` payment as PENDING; only the owner can choose it; receptionists and managers of that hotel alone can mark it received, which is when it counts as revenue; cancelling before paying owes nothing; an online payment for the same booking voids the desk balance.
-- Payment webhooks (`PaymentWebhookIntegrationTest`, signed Stripe payloads over HTTP): a verified payment confirms the hold once even when Stripe redelivers; unsigned, wrongly signed, tampered and replayed (older than 5 minutes) events are rejected with no side effects; a declined card keeps the hold and the same checkout; a payment after the hold expired is refunded in full without reviving inventory; a wrong amount is refunded, never counts as revenue and lets the guest start a fresh checkout; a policy cancellation refunds through the worker; unrelated events are acknowledged so Stripe stops retrying. Guests get "Room hold expired" and "Refund issued" updates (in-app and email), the latter only once Stripe confirms the refund.
-- Backup and recovery: `pg_dump -Fc` plus `pg_restore` into an empty database preserves the data, frozen rates and Flyway history, and the restored copy still rejects double bookings.
+Demo data exists only in the `local` profile. In production, the first administrator is created from `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`.
 
-See [docs/architecture.md](docs/architecture.md) and [docs/api-examples.md](docs/api-examples.md) for domain decisions and sample API requests.
+## 3. Configuration
+
+All settings live in `.env` (copied from `.env.example`). **Never commit `.env`.** After changing it, restart with `docker compose up --build`.
+
+### Required
+
+| Setting | Purpose |
+| --- | --- |
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Database name and login |
+| `WEB_ORIGIN` | Address of the web app, allowed by the API (default `http://localhost:3000`) |
+
+### Optional features
+
+Each feature below stays off until its settings are filled in. The rest of the system works without them.
+
+#### Online card payment (Stripe)
+
+1. Create a free account at [stripe.com](https://stripe.com) and switch to **Test mode**.
+2. Copy the secret key (`sk_test_...`) into `STRIPE_SECRET_KEY`.
+3. For local testing, install the [Stripe CLI](https://docs.stripe.com/stripe-cli) and run:
+   ```bash
+   stripe listen --forward-to localhost:8080/api/v1/payments/webhooks/stripe
+   ```
+   Copy the printed signing secret (`whsec_...`) into `STRIPE_WEBHOOK_SECRET` and keep the command running.
+4. In production, add a webhook endpoint in the Stripe dashboard for `https://<your-api>/api/v1/payments/webhooks/stripe` with the events `payment_intent.succeeded` and `payment_intent.payment_failed`, and use its signing secret.
+5. Test with card `4242 4242 4242 4242`, any future date and any CVC.
+
+Without Stripe keys, guests can still book with **Pay at hotel**.
+
+#### Booking emails (Resend or a compatible API)
+
+| Setting | Value |
+| --- | --- |
+| `EMAIL_API_KEY` | API key from [resend.com](https://resend.com) |
+| `EMAIL_FROM` | A sender address on a domain you verified, e.g. `StayEase <bookings@example.com>` |
+
+Without these, notifications still appear in the in-app inbox.
+
+#### Hotel photo uploads (Amazon S3 or an S3-compatible service)
+
+| Setting | Value |
+| --- | --- |
+| `S3_BUCKET`, `S3_REGION` | Bucket name and region |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Access key pair with read/write rights on the bucket |
+| `S3_ENDPOINT` | Only for S3-compatible providers (MinIO, Cloudflare R2, ...) |
+
+#### First administrator (for a fresh database without demo data)
+
+Set `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` (at least 12 characters) before the first start.
+
+#### Other settings
+
+| Setting | Purpose |
+| --- | --- |
+| `KHR_PER_USD`, `KHR_RATE_PUBLISHED_ON` | Riel exchange rate used to display prices in KHR |
+| `FORWARD_HEADERS_STRATEGY` | Set to `native` only behind a trusted reverse proxy |
+| `UNSPLASH_ACCESS_KEY` | Only for `scripts/unsplash-demo-photos.mjs`, which builds demo photo data |
+
+## 4. Run without Docker (development)
+
+Use this when you change code and want fast reloads.
+
+**You need:** Java 21, Maven 3.9+, Node.js 20.9+ and a PostgreSQL 18 server (you can run only the database in Docker).
+
+#### Step 1. Start the database
+
+```bash
+docker compose up -d db
+```
+
+#### Step 2. Start the API (in a new terminal)
+
+```bash
+cd backend
+SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
+```
+
+On Windows PowerShell: `$env:SPRING_PROFILES_ACTIVE="local"; mvn spring-boot:run`. The API connects to `localhost:5432` with the default user `stayease` / password `local-only`; if your `.env` sets another password, also set `SPRING_DATASOURCE_PASSWORD`.
+
+#### Step 3. Start the web app (in another terminal)
+
+```bash
+cd frontend
+npm install
+echo NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1 > .env.local
+npm run dev
+```
+
+Open <http://localhost:3000>. Pages reload as you save files.
+
+## 5. Tests
+
+| Part | Command | Notes |
+| --- | --- | --- |
+| API | `cd backend && mvn test` | Docker must be running: integration tests start a real PostgreSQL container (Testcontainers) |
+| Web | `cd frontend && npm run lint` | TypeScript type check |
+| Web | `cd frontend && npm run build` | Production build |
+
+The API tests cover double-booking races, hold expiry, frozen prices, Stripe webhook signatures and refunds, pay at hotel, promo code rules, role-based access (401/403) and backup/restore.
+
+## 6. Everyday commands
+
+| Task | Command |
+| --- | --- |
+| Start in the background | `docker compose up -d --build` |
+| Follow the logs | `docker compose logs -f api` (or `web`, `db`) |
+| Stop | `docker compose down` |
+| Rebuild one part after a code change | `docker compose up -d --build web` |
+| **Reset the database** (deletes all data, reloads demo data) | `docker compose down -v` then `docker compose up --build` |
+| Back up the database | `docker compose exec db pg_dump -U stayease -Fc stayease > stayease.dump` |
+| Restore a backup | `docker compose exec -T db pg_restore -U stayease --clean --if-exists -d stayease < stayease.dump` |
+
+## 7. Project structure
+
+```text
+stayease/
+├─ docker-compose.yml      database, API and web app
+├─ .env.example            settings template
+├─ backend/                Spring Boot API
+│  └─ src/main/java/com/stayease/
+│     ├─ auth/             sign-in, sessions, rate limiting
+│     ├─ hotel/            search, hotel registration, manager workspace
+│     ├─ reservation/      booking, holds, cancellation
+│     ├─ payment/          Stripe, webhooks, refunds, pay at hotel
+│     ├─ promotion/        hotel and platform promo codes
+│     ├─ reception/        arrivals, check-in, check-out
+│     ├─ admin/            approvals, users, staff
+│     ├─ notification/     in-app inbox, email outbox
+│     └─ common/           security, errors, health
+│  └─ src/main/resources/db/
+│     ├─ migration/        database schema (Flyway)
+│     └─ local/            demo data, local profile only
+├─ frontend/               Next.js web app
+│  ├─ app/                 pages, one folder per URL
+│  ├─ components/          header, footer, UI kit, staff workspaces
+│  └─ lib/                 API client, session, English/Khmer text
+└─ docs/                   architecture notes, API examples, screenshots
+```
+
+More detail: [docs/architecture.md](docs/architecture.md) and [docs/api-examples.md](docs/api-examples.md).
+
+## 8. Troubleshooting
+
+| Problem | Fix |
+| --- | --- |
+| `port is already allocated` | Another program uses 3000, 8080 or 5432. Stop it, or change the left-hand port in `docker-compose.yml` (e.g. `"3001:3000"`) |
+| Website says it cannot reach StayEase | The API is still starting (about 30 s). Check `docker compose logs -f api` |
+| Login fails after changing `POSTGRES_PASSWORD` | The database kept the old password. Reset it with `docker compose down -v` (deletes data) |
+| No demo hotels | The API must run with `SPRING_PROFILES_ACTIVE=local` (Docker does this for you) |
+| **Pay online** button missing | Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`, then restart |
+| Payment stays "Confirming" | The webhook is not arriving. Keep `stripe listen` running and check the `whsec_` secret matches |
+| `mvn test` fails at start | Docker is not running; the tests need it for PostgreSQL |
+| Signed in on one tab but not another | By design: sessions are kept per browser tab and end when the tab closes |
