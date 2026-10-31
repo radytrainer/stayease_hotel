@@ -30,6 +30,7 @@ Hotel booking platform for Cambodia. Guests search live availability in all 25 p
 6. [Everyday commands](#6-everyday-commands)
 7. [Project structure](#7-project-structure)
 8. [Troubleshooting](#8-troubleshooting)
+9. [Deploy to AWS (EC2)](#9-deploy-to-aws-ec2)
 
 ---
 
@@ -229,6 +230,8 @@ Bookings use random dates 300–700 days ahead and are cancelled at the end, so 
 ```text
 stayease/
 ├─ docker-compose.yml      database, API and web app
+├─ docker-compose.prod.yml production stack behind Caddy (see section 9)
+├─ deploy/                 server setup, deploy and backup scripts, Caddyfile
 ├─ .env.example            settings template
 ├─ backend/                Spring Boot API
 │  └─ src/main/java/com/stayease/
@@ -265,3 +268,81 @@ More detail: [docs/architecture.md](docs/architecture.md) and [docs/api-examples
 | Payment stays "Confirming" | The webhook is not arriving. Keep `stripe listen` running and check the `whsec_` secret matches |
 | `mvn test` fails at start | Docker is not running; the tests need it for PostgreSQL |
 | Signed in on one tab but not another | By design: sessions are kept per browser tab and end when the tab closes |
+
+## 9. Deploy to AWS (EC2)
+
+The whole stack runs on one EC2 instance with Docker. [Caddy](https://caddyserver.com) is the only container reachable from outside: it sends `/api/*` to the API and everything else to the web app, so the browser talks to a single address. The database and app ports stay private.
+
+```text
+browser ──► :80 Caddy ──► /api/*  ──► api:8080 ──► db:5432
+                     └──► others  ──► web:3000
+```
+
+Current server: **http://3.107.7.2**
+
+#### Step 1. Prepare the instance (once)
+
+- **Instance:** Ubuntu 24.04 or Amazon Linux 2023, at least `t3.small` (2 GB). The setup script adds 4 GB of swap below 4 GB of memory so the builds fit. 20 GB disk.
+- **Security group inbound rules:** SSH `22` from your own IP only, HTTP `80` from anywhere (`443` too once you use a domain). Do **not** open 3000, 8080 or 5432.
+- **Elastic IP:** attach one so `3.107.7.2` survives a stop/start; otherwise the address changes and you must update `PUBLIC_URL` and rebuild.
+
+```bash
+ssh -i your-key.pem ubuntu@3.107.7.2          # ec2-user@ on Amazon Linux
+git clone https://github.com/radytrainer/stayease_hotel.git stayease
+cd stayease
+bash deploy/setup-server.sh                    # installs Docker, adds swap
+exit                                           # log in again so the docker group applies
+```
+
+#### Step 2. Create the production settings
+
+```bash
+cd stayease
+cp deploy/env.production.example .env
+openssl rand -base64 24                        # paste the result into POSTGRES_PASSWORD
+nano .env
+```
+
+Fill in `POSTGRES_PASSWORD` and either:
+
+- `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` for a real, empty system, or
+- `SPRING_PROFILES_ACTIVE=local` for a demo server with the demo hotels and accounts from section 2.
+
+Choose before the first start; switching later needs a fresh database (`docker compose -f docker-compose.prod.yml down -v`). The optional Stripe, email and S3 settings work as described in section 3.
+
+#### Step 3. Start it
+
+```bash
+bash deploy/deploy.sh
+```
+
+The first build takes 5–10 minutes. The script waits until the site answers and then prints `StayEase is up at http://3.107.7.2`. Check it from your own computer with `API_URL=http://3.107.7.2/api/v1 node scripts/smoke-test.mjs` (demo data only).
+
+#### Updating
+
+```bash
+cd stayease && bash deploy/deploy.sh --pull     # git pull, rebuild, restart
+```
+
+#### Operations
+
+| Task | Command (in `~/stayease`) |
+| --- | --- |
+| Status | `docker compose -f docker-compose.prod.yml ps` |
+| Logs | `docker compose -f docker-compose.prod.yml logs -f api` (or `web`, `proxy`, `db`) |
+| Back up now | `bash deploy/backup-db.sh` (to `~/stayease-backups`, newest 14 kept) |
+| Daily backup at 02:00 | `crontab -e`, add `0 2 * * * bash $HOME/stayease/deploy/backup-db.sh` |
+| Stop | `docker compose -f docker-compose.prod.yml down` (data is kept) |
+
+Copy backups off the server too (for example `aws s3 cp` to a bucket), since they are lost with the instance.
+
+#### HTTPS with a domain
+
+On the bare IP the site is plain HTTP. Passwords and session tokens then cross the network unencrypted, and Stripe needs an `https://` webhook URL for live payments. To fix this, point a domain's DNS `A` record at the Elastic IP, open port `443`, and set in `.env`:
+
+```text
+SITE_ADDRESS=stayease.example.com
+PUBLIC_URL=https://stayease.example.com
+```
+
+Then run `bash deploy/deploy.sh`. Caddy obtains and renews the Let's Encrypt certificate automatically. `PUBLIC_URL` is built into the web app, so any change to it needs this rebuild.
